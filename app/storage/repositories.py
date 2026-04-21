@@ -20,6 +20,9 @@ def _model_to_record(m: TradeModel) -> TradeRecord:
         units=m.units,
         open_price=m.open_price,
         close_price=m.close_price,
+        stop_loss=m.stop_loss,
+        take_profit=m.take_profit,
+        realized_pnl=m.realized_pnl,
         status=m.status,
         opened_at=m.opened_at,
         closed_at=m.closed_at,
@@ -39,6 +42,8 @@ class TradeRepository:
                 side=result.side.value,
                 units=result.units,
                 open_price=result.fill_price,
+                stop_loss=result.stop_loss,
+                take_profit=result.take_profit,
                 status="OPEN",
                 opened_at=opened_at,
             )
@@ -83,6 +88,28 @@ class TradeRepository:
             if model is None:
                 return None
             model.close_price = close_price
+            model.closed_at = closed_at
+            model.status = "CLOSED"
+            await session.commit()
+            await session.refresh(model)
+            return _model_to_record(model)
+
+    async def close_with_pnl(
+        self,
+        broker_trade_id: str,
+        close_price: float,
+        realized_pnl: float,
+        closed_at: datetime,
+    ) -> TradeRecord | None:
+        async with self._factory() as session:
+            result = await session.execute(
+                select(TradeModel).where(TradeModel.broker_trade_id == broker_trade_id)
+            )
+            model = result.scalar_one_or_none()
+            if model is None:
+                return None
+            model.close_price = close_price
+            model.realized_pnl = realized_pnl
             model.closed_at = closed_at
             model.status = "CLOSED"
             await session.commit()

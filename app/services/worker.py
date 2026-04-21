@@ -75,6 +75,11 @@ class Worker:
         timezone: str = "America/New_York",
         stop_loss_pips: float = 20.0,
         take_profit_pips: float = 40.0,
+        candle_granularity: str = "M5",
+        candle_count: int = 60,
+        short_ma_period: int = 10,
+        long_ma_period: int = 30,
+        breakout_lookback: int = 20,
     ) -> None:
         self._state = state
         self._client = client
@@ -89,6 +94,11 @@ class Worker:
         self._timezone = timezone
         self._stop_loss_pips = stop_loss_pips
         self._take_profit_pips = take_profit_pips
+        self._candle_granularity = candle_granularity
+        self._candle_count = candle_count
+        self._short_ma_period = short_ma_period
+        self._long_ma_period = long_ma_period
+        self._breakout_lookback = breakout_lookback
 
     async def run(self) -> None:
         logger.info(
@@ -151,7 +161,15 @@ class Worker:
         for instrument in self._instruments:
             self._state.current_instrument = instrument
 
-            features = await build_feature_set(self._client, instrument)
+            features = await build_feature_set(
+                self._client,
+                instrument,
+                granularity=self._candle_granularity,
+                candle_count=self._candle_count,
+                short_period=self._short_ma_period,
+                long_period=self._long_ma_period,
+                lookback=self._breakout_lookback,
+            )
 
             bid = features.mid_price - features.spread / 2
             ask = features.mid_price + features.spread / 2

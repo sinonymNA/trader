@@ -7,6 +7,7 @@ from app.schemas.domain import ApexSimulator, OrderIntent, OrderResult
 
 if TYPE_CHECKING:
     from app.broker.oanda_client import OandaClient
+    from app.strategy.apex_simulator import ApexSimulatorPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,28 @@ class ExecutionPolicy:
         client: "OandaClient",
         max_units: int = 1000,
         simulator: ApexSimulator | None = None,
+        apex_sim: "ApexSimulatorPolicy | None" = None,
     ) -> None:
         self._client = client
         self._max_units = max_units
         self._simulator = simulator
+        self._apex_sim = apex_sim
 
     async def execute(self, intent: OrderIntent) -> OrderResult:
+        if self._apex_sim is not None:
+            can_trade, reason = self._apex_sim.check_rules()
+            if not can_trade:
+                logger.warning("Apex rules block order for %s: %s", intent.instrument, reason)
+                return OrderResult(
+                    success=False,
+                    order_id="",
+                    instrument=intent.instrument,
+                    side=intent.side,
+                    units=intent.units,
+                    fill_price=0.0,
+                    error=f"Apex rules: {reason}",
+                )
+
         if self._simulator is not None:
             logger.info(
                 "Routing order through Apex simulator: %s %s %d",
@@ -66,13 +83,20 @@ class ExecutionPolicy:
             take_profit=intent.take_profit,
         )
         fill = raw.get("orderFillTransaction", {})
+        # OANDA fill transaction ID ≠ trade ID; use tradeOpened.tradeID for subsequent ops
+        broker_trade_id = (
+            fill.get("tradeOpened", {}).get("tradeID")
+            or fill.get("id", "UNKNOWN")
+        )
 
         return OrderResult(
             success=True,
-            order_id=fill.get("id", "UNKNOWN"),
+            order_id=broker_trade_id,
             instrument=intent.instrument,
             side=intent.side,
             units=abs(int(fill.get("units", intent.units))),
             fill_price=float(fill.get("price", 0.0)),
             dry_run=self._client._dry_run,
+            stop_loss=intent.stop_loss,
+            take_profit=intent.take_profit,
         )

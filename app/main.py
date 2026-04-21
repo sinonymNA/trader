@@ -7,10 +7,11 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 
-from app.api import control, health, state, trades
+from app.api import control, dashboard, health, state, trades
 from app.broker.oanda_client import OandaClient
 from app.config import get_settings
 from app.core.logging import configure_logging
+from app.risk.day_limits import DayLimits
 from app.risk.kill_switch import KillSwitch
 from app.risk.limits import RiskLimits
 from app.services.journaling import JournalService
@@ -19,6 +20,7 @@ from app.services.trader import Trader
 from app.services.worker import Worker, WorkerState
 from app.storage.db import dispose_engine, init_db, get_session_factory
 from app.storage.repositories import JournalRepository, TradeRepository
+from app.strategy.apex_simulator import ApexSimulatorPolicy
 from app.strategy.execution_policy import ExecutionPolicy
 from app.strategy.signal_engine import SignalEngine
 
@@ -67,14 +69,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         dry_run=settings.dry_run,
     )
 
+    # Apex simulator (optional funded-challenge rule engine)
+    apex_sim: ApexSimulatorPolicy | None = None
+    if settings.apex_enabled:
+        apex_sim = ApexSimulatorPolicy(
+            account_size=settings.apex_account_size,
+            max_daily_loss_pct=settings.apex_max_daily_loss_pct,
+            max_trailing_drawdown_pct=settings.apex_trailing_drawdown_pct,
+            profit_target_pct=settings.apex_profit_target_pct,
+        )
+        logger.info("Apex simulator ENABLED")
+
     # Strategy + Risk
-    signal_engine = SignalEngine()
-    policy = ExecutionPolicy(client=oanda_client, max_units=settings.max_position_units)
+    signal_engine = SignalEngine(trade_units=settings.trade_units)
+    policy = ExecutionPolicy(
+        client=oanda_client,
+        max_units=settings.max_position_units,
+        apex_sim=apex_sim,
+    )
     risk = RiskLimits(
         max_position_units=settings.max_position_units,
+        max_open_trades=settings.max_open_trades,
         daily_loss_limit_usd=settings.daily_loss_limit_usd,
     )
     kill_switch = KillSwitch()
+    day_limits = DayLimits(
+        max_trades_per_day=settings.max_trades_per_day,
+        max_losses_per_day=settings.max_losses_per_day,
+    )
     journal = JournalService(journal_repo)
     trader = Trader(
         policy=policy,
@@ -82,8 +104,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         trade_repo=trade_repo,
         journal=journal,
         trading_enabled=settings.trading_enabled,
+        day_limits=day_limits,
     )
-    reconciler = Reconciler(oanda_client, trade_repo)
+    reconciler = Reconciler(oanda_client, trade_repo, day_limits=day_limits, apex_sim=apex_sim)
 
     # Shared state
     worker_state = WorkerState()
@@ -92,6 +115,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.worker_state = worker_state
     app.state.trade_repo = trade_repo
     app.state.settings = settings
+    app.state.day_limits = day_limits
+    app.state.apex_sim = apex_sim
+    app.state.client = oanda_client
+    app.state.journal = journal
 
     # Background worker
     worker = Worker(
@@ -108,6 +135,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         timezone=settings.timezone,
         stop_loss_pips=settings.stop_loss_pips,
         take_profit_pips=settings.take_profit_pips,
+        candle_granularity="M5",
+        candle_count=settings.candle_count,
+        short_ma_period=settings.short_ma_period,
+        long_ma_period=settings.long_ma_period,
+        breakout_lookback=settings.breakout_lookback,
     )
     worker_task = asyncio.create_task(worker.run(), name="trading-worker")
 
@@ -140,6 +172,7 @@ def create_app() -> FastAPI:
     app.include_router(state.router)
     app.include_router(trades.router)
     app.include_router(control.router)
+    app.include_router(dashboard.router)
     return app
 
 

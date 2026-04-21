@@ -43,6 +43,11 @@ class FeatureSet:
     spread: float
     candles: list[Candle] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+    short_ma: float | None = None
+    long_ma: float | None = None
+    breakout_high: float | None = None
+    breakout_low: float | None = None
+    stale: bool = False
 
 
 @dataclass
@@ -75,6 +80,8 @@ class OrderResult:
     fill_price: float
     dry_run: bool = False
     error: str = ""
+    stop_loss: float | None = None
+    take_profit: float | None = None
 
 
 @dataclass
@@ -89,6 +96,9 @@ class TradeRecord:
     opened_at: datetime
     close_price: float | None = None
     closed_at: datetime | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    realized_pnl: float | None = None
 
 
 @dataclass

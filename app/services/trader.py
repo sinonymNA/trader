@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from app.core.clock import utcnow
+from app.risk.day_limits import DayLimits
 from app.risk.limits import RiskLimits
 from app.schemas.domain import OrderIntent, OrderResult
 from app.services.journaling import JournalService
@@ -22,12 +23,14 @@ class Trader:
         trade_repo: TradeRepository,
         journal: JournalService,
         trading_enabled: bool = False,
+        day_limits: DayLimits | None = None,
     ) -> None:
         self._policy = policy
         self._risk = risk
         self._trade_repo = trade_repo
         self._journal = journal
         self._trading_enabled = trading_enabled
+        self._day_limits = day_limits
 
     async def execute(self, intent: OrderIntent) -> OrderResult | None:
         if not self._trading_enabled:
@@ -44,6 +47,16 @@ class Trader:
             return None
 
         open_trades = await self._trade_repo.list_open()
+
+        if self._day_limits:
+            can_trade, reason = self._day_limits.can_trade(len(open_trades))
+            if not can_trade:
+                logger.warning("Order blocked by day limits: %s", reason)
+                await self._journal.record_event(
+                    "DAY_LIMIT_REJECTED", reason, instrument=intent.instrument
+                )
+                return None
+
         allowed, reason = self._risk.check_order(intent, open_trade_count=len(open_trades))
         if not allowed:
             logger.warning("Order blocked by risk limits: %s", reason)
@@ -56,8 +69,10 @@ class Trader:
         if result.success:
             await self._trade_repo.create(result, opened_at=utcnow())
             await self._journal.record_fill(result)
+            if self._day_limits:
+                self._day_limits.record_trade()
             logger.info(
-                "Trade opened: %s %s %d @ %.5f (order_id=%s)",
+                "Trade opened: %s %s %d @ %.5f (broker_trade_id=%s)",
                 result.side.value,
                 result.instrument,
                 result.units,

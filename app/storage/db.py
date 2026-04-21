@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -35,6 +36,8 @@ def get_session_factory(database_url: str) -> async_sessionmaker[AsyncSession]:
 async def init_db(database_url: str) -> None:
     engine = get_engine(database_url)
     async with engine.begin() as conn:
+        if "sqlite" in database_url:
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.run_sync(Base.metadata.create_all)
 
 

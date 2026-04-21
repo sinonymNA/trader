@@ -9,6 +9,7 @@ import logging
 from app.broker.oanda_client import OandaClient
 from app.config import get_settings
 from app.core.logging import configure_logging
+from app.risk.day_limits import DayLimits
 from app.risk.kill_switch import KillSwitch
 from app.risk.limits import RiskLimits
 from app.services.journaling import JournalService
@@ -44,18 +45,24 @@ async def main() -> None:
     policy = ExecutionPolicy(client=client, max_units=settings.max_position_units)
     risk = RiskLimits(
         max_position_units=settings.max_position_units,
+        max_open_trades=settings.max_open_trades,
         daily_loss_limit_usd=settings.daily_loss_limit_usd,
     )
     kill_switch = KillSwitch()
+    day_limits = DayLimits(
+        max_trades_per_day=settings.max_trades_per_day,
+        max_losses_per_day=settings.max_losses_per_day,
+    )
     trader = Trader(
         policy=policy,
         risk=risk,
         trade_repo=trade_repo,
         journal=journal,
         trading_enabled=settings.trading_enabled,
+        day_limits=day_limits,
     )
-    reconciler = Reconciler(client, trade_repo)
-    signal_engine = SignalEngine()
+    reconciler = Reconciler(client, trade_repo, day_limits=day_limits)
+    signal_engine = SignalEngine(trade_units=settings.trade_units)
     worker_state = WorkerState()
 
     worker = Worker(
@@ -72,6 +79,11 @@ async def main() -> None:
         timezone=settings.timezone,
         stop_loss_pips=settings.stop_loss_pips,
         take_profit_pips=settings.take_profit_pips,
+        candle_granularity="M5",
+        candle_count=settings.candle_count,
+        short_ma_period=settings.short_ma_period,
+        long_ma_period=settings.long_ma_period,
+        breakout_lookback=settings.breakout_lookback,
     )
 
     logger.info(

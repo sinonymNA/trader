@@ -34,6 +34,23 @@ class Settings(BaseSettings):
     stop_loss_pips: float = 20.0
     take_profit_pips: float = 40.0
 
+    # Strategy
+    short_ma_period: int = 10
+    long_ma_period: int = 30
+    breakout_lookback: int = 20
+    candle_count: int = 60
+    trade_units: int = 100
+    max_open_trades: int = 1
+    max_trades_per_day: int = 3
+    max_losses_per_day: int = 2
+
+    # Apex simulator (funded challenge rules)
+    apex_enabled: bool = False
+    apex_account_size: float = 100_000.0
+    apex_max_daily_loss_pct: float = 0.02
+    apex_trailing_drawdown_pct: float = 0.04
+    apex_profit_target_pct: float = 0.08
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

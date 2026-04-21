@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -64,6 +65,34 @@ class OandaClient:
         """Format a price with the correct decimal places for the instrument."""
         return f"{price:.3f}" if "JPY" in instrument else f"{price:.5f}"
 
+    async def _call(
+        self, method: str, path: str, **kwargs: Any
+    ) -> httpx.Response:
+        """HTTP helper with exponential-backoff retry for 5xx / network errors."""
+        c = await self._client()
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(3):
+            try:
+                resp: httpx.Response = await getattr(c, method)(path, **kwargs)
+                resp.raise_for_status()
+                return resp
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < 500:
+                    raise  # 4xx — don't retry
+                last_exc = exc
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                last_exc = exc
+            if attempt < 2:
+                delay = 2**attempt  # 1 s, 2 s
+                logger.warning(
+                    "OANDA request failed (attempt %d/3) — retry in %ds: %s",
+                    attempt + 1,
+                    delay,
+                    last_exc,
+                )
+                await asyncio.sleep(delay)
+        raise last_exc
+
     async def close(self) -> None:
         if self._http and not self._http.is_closed:
             await self._http.aclose()
@@ -119,9 +148,7 @@ class OandaClient:
                 }
             }
         self._require_credentials()
-        c = await self._client()
-        resp = await c.get(f"/v3/accounts/{self._account_id}/summary")
-        resp.raise_for_status()
+        resp = await self._call("get", f"/v3/accounts/{self._account_id}/summary")
         return resp.json()
 
     async def get_latest_prices(self, instruments: list[str]) -> list[dict[str, Any]]:
@@ -138,10 +165,8 @@ class OandaClient:
                 for instr in instruments
             ]
         self._require_credentials()
-        c = await self._client()
         params = {"instruments": ",".join(instruments)}
-        resp = await c.get(f"/v3/accounts/{self._account_id}/pricing", params=params)
-        resp.raise_for_status()
+        resp = await self._call("get", f"/v3/accounts/{self._account_id}/pricing", params=params)
         return resp.json().get("prices", [])
 
     async def get_candles(
@@ -154,10 +179,8 @@ class OandaClient:
             logger.debug("[DRY-RUN] get_candles → empty list")
             return []
         self._require_credentials()
-        c = await self._client()
         params = {"granularity": granularity, "count": str(count)}
-        resp = await c.get(f"/v3/instruments/{instrument}/candles", params=params)
-        resp.raise_for_status()
+        resp = await self._call("get", f"/v3/instruments/{instrument}/candles", params=params)
         return resp.json().get("candles", [])
 
     async def list_open_trades(self) -> list[dict[str, Any]]:
@@ -165,9 +188,7 @@ class OandaClient:
             logger.debug("[DRY-RUN] list_open_trades → empty list")
             return []
         self._require_credentials()
-        c = await self._client()
-        resp = await c.get(f"/v3/accounts/{self._account_id}/openTrades")
-        resp.raise_for_status()
+        resp = await self._call("get", f"/v3/accounts/{self._account_id}/openTrades")
         return resp.json().get("trades", [])
 
     async def place_market_order(
@@ -193,13 +214,15 @@ class OandaClient:
                 "[DRY-RUN] place_market_order %s units=%d%s%s",
                 instrument, units, sl_str, tp_str,
             )
+            dry_trade_id = f"DRY-TRADE-{instrument}-{abs(units)}"
             return {
                 "orderFillTransaction": {
-                    "id": f"DRY-{instrument}-{abs(units)}",
+                    "id": f"DRY-FILL-{instrument}-{abs(units)}",
                     "instrument": instrument,
                     "units": str(units),
                     "price": _DRY_PRICE,
                     "type": "ORDER_FILL",
+                    "tradeOpened": {"tradeID": dry_trade_id},
                 }
             }
 
@@ -225,8 +248,22 @@ class OandaClient:
                 "timeInForce": "GTC",
             }
 
-        resp = await c.post(f"/v3/accounts/{self._account_id}/orders", json=body)
-        resp.raise_for_status()
+        resp = await self._call("post", f"/v3/accounts/{self._account_id}/orders", json=body)
+        return resp.json()
+
+    async def get_trade(self, trade_id: str) -> dict[str, Any]:
+        if self._dry_run:
+            logger.debug("[DRY-RUN] get_trade %s → stub", trade_id)
+            return {
+                "trade": {
+                    "id": trade_id,
+                    "state": "CLOSED",
+                    "realizedPL": "0.0000",
+                    "closeoutPrice": _DRY_PRICE_BID,
+                }
+            }
+        self._require_credentials()
+        resp = await self._call("get", f"/v3/accounts/{self._account_id}/trades/{trade_id}")
         return resp.json()
 
     async def close_trade(self, trade_id: str) -> dict[str, Any]:
@@ -240,9 +277,7 @@ class OandaClient:
                 }
             }
         self._require_credentials()
-        c = await self._client()
-        resp = await c.put(
-            f"/v3/accounts/{self._account_id}/trades/{trade_id}/close"
+        resp = await self._call(
+            "put", f"/v3/accounts/{self._account_id}/trades/{trade_id}/close"
         )
-        resp.raise_for_status()
         return resp.json()
