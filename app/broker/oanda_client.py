@@ -17,6 +17,7 @@ class OandaClient:
 
     When dry_run=True and credentials are absent, all methods return
     plausible stub data so the app can boot and loop without touching OANDA.
+    When dry_run=True with credentials, reads use real API; writes are still stubbed.
     """
 
     def __init__(
@@ -58,9 +59,47 @@ class OandaClient:
             )
         return self._http
 
+    @staticmethod
+    def _fmt_price(instrument: str, price: float) -> str:
+        """Format a price with the correct decimal places for the instrument."""
+        return f"{price:.3f}" if "JPY" in instrument else f"{price:.5f}"
+
     async def close(self) -> None:
         if self._http and not self._http.is_closed:
             await self._http.aclose()
+
+    # ------------------------------------------------------------------
+    # Credential verification
+    # ------------------------------------------------------------------
+
+    async def verify(self) -> None:
+        """
+        Call the OANDA account summary endpoint to confirm credentials are valid.
+        Raises RuntimeError with a human-readable message on failure.
+        Should be called at startup when DRY_RUN=false.
+        """
+        try:
+            await self.get_account_summary()
+            logger.info("OANDA credential check passed (account_id=%s)", self._account_id)
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code
+            if code in (401, 403):
+                raise RuntimeError(
+                    f"OANDA authentication failed (HTTP {code}). "
+                    "Check that OANDA_API_KEY and OANDA_ACCOUNT_ID are correct "
+                    "and that the key has not expired."
+                ) from exc
+            raise RuntimeError(
+                f"OANDA API returned HTTP {code} during credential check"
+            ) from exc
+        except httpx.ConnectError as exc:
+            raise RuntimeError(
+                f"Cannot reach OANDA API at {self._base_url}: {exc}"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"OANDA API timed out during credential check: {exc}"
+            ) from exc
 
     # ------------------------------------------------------------------
     # Public API methods
@@ -131,10 +170,29 @@ class OandaClient:
         resp.raise_for_status()
         return resp.json().get("trades", [])
 
-    async def place_market_order(self, instrument: str, units: int) -> dict[str, Any]:
-        """Place a market order. units > 0 = BUY, units < 0 = SELL."""
+    async def place_market_order(
+        self,
+        instrument: str,
+        units: int,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        Place a MARKET order. units > 0 = BUY, units < 0 = SELL.
+
+        Args:
+            instrument:  OANDA instrument name, e.g. "EUR_USD"
+            units:       Positive for BUY, negative for SELL
+            stop_loss:   Absolute price level for stop-loss order (GTC)
+            take_profit: Absolute price level for take-profit order (GTC)
+        """
         if self._dry_run:
-            logger.info("[DRY-RUN] place_market_order %s units=%d", instrument, units)
+            sl_str = f" SL={self._fmt_price(instrument, stop_loss)}" if stop_loss else ""
+            tp_str = f" TP={self._fmt_price(instrument, take_profit)}" if take_profit else ""
+            logger.info(
+                "[DRY-RUN] place_market_order %s units=%d%s%s",
+                instrument, units, sl_str, tp_str,
+            )
             return {
                 "orderFillTransaction": {
                     "id": f"DRY-{instrument}-{abs(units)}",
@@ -144,9 +202,10 @@ class OandaClient:
                     "type": "ORDER_FILL",
                 }
             }
+
         self._require_credentials()
         c = await self._client()
-        body = {
+        body: dict[str, Any] = {
             "order": {
                 "type": "MARKET",
                 "instrument": instrument,
@@ -155,6 +214,17 @@ class OandaClient:
                 "positionFill": "DEFAULT",
             }
         }
+        if stop_loss is not None:
+            body["order"]["stopLossOnFill"] = {
+                "price": self._fmt_price(instrument, stop_loss),
+                "timeInForce": "GTC",
+            }
+        if take_profit is not None:
+            body["order"]["takeProfitOnFill"] = {
+                "price": self._fmt_price(instrument, take_profit),
+                "timeInForce": "GTC",
+            }
+
         resp = await c.post(f"/v3/accounts/{self._account_id}/orders", json=body)
         resp.raise_for_status()
         return resp.json()

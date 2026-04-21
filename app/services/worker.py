@@ -71,8 +71,10 @@ class Worker:
         signal_engine: SignalEngine,
         policy: ExecutionPolicy,
         instruments: list[str],
-        interval_seconds: int = 30,
+        interval_seconds: int = 15,
         timezone: str = "America/New_York",
+        stop_loss_pips: float = 20.0,
+        take_profit_pips: float = 40.0,
     ) -> None:
         self._state = state
         self._client = client
@@ -85,6 +87,8 @@ class Worker:
         self._instruments = instruments
         self._interval = interval_seconds
         self._timezone = timezone
+        self._stop_loss_pips = stop_loss_pips
+        self._take_profit_pips = take_profit_pips
 
     async def run(self) -> None:
         logger.info(
@@ -124,22 +128,57 @@ class Worker:
         logger.warning("Worker loop exited. killed=%s", self._state.killed)
 
     async def _tick(self) -> None:
+        cycle_at = utcnow()
+        self._state.last_tick_at = cycle_at
+        logger.info("── Tick @ %s ──", cycle_at.strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+        # Account summary — fail-soft so a transient error doesn't abort the tick
+        try:
+            summary = await self._client.get_account_summary()
+            acct = summary.get("account", {})
+            logger.info(
+                "Account  balance=%s  NAV=%s  openTrades=%s  currency=%s",
+                acct.get("balance", "?"),
+                acct.get("NAV", "?"),
+                acct.get("openTradeCount", "?"),
+                acct.get("currency", "?"),
+            )
+        except Exception as exc:
+            logger.warning("Could not fetch account summary: %s", exc)
+
         await self._reconciler.run()
-        self._state.last_tick_at = utcnow()
 
         for instrument in self._instruments:
             self._state.current_instrument = instrument
 
             features = await build_feature_set(self._client, instrument)
+
+            bid = features.mid_price - features.spread / 2
+            ask = features.mid_price + features.spread / 2
+            logger.info(
+                "Price  %-10s  bid=%.5f  ask=%.5f  spread=%.5f  candles=%d",
+                instrument,
+                bid,
+                ask,
+                features.spread,
+                len(features.candles),
+            )
+
             signal = self._signal_engine.evaluate(features)
 
             if signal is None:
                 self._state.last_signal = "HOLD"
-                await self._journal.record_event(
-                    "SIGNAL", "HOLD", instrument=instrument
-                )
+                logger.info("Signal %-10s → HOLD", instrument)
+                await self._journal.record_event("SIGNAL", "HOLD", instrument=instrument)
                 continue
 
+            logger.info(
+                "Signal %-10s → %s (%s)  reason=%s",
+                instrument,
+                signal.side.value,
+                signal.strength.value,
+                signal.reason,
+            )
             self._state.last_signal = signal.side.value
             await self._journal.record_event(
                 "SIGNAL",
@@ -147,9 +186,30 @@ class Worker:
                 instrument=instrument,
             )
 
+            # Compute absolute SL/TP prices from pip config
+            pip = 0.01 if "JPY" in instrument else 0.0001
+            decimals = 3 if "JPY" in instrument else 5
+            if signal.side.value == "BUY":
+                sl = round(features.mid_price - self._stop_loss_pips * pip, decimals)
+                tp = round(features.mid_price + self._take_profit_pips * pip, decimals)
+            else:
+                sl = round(features.mid_price + self._stop_loss_pips * pip, decimals)
+                tp = round(features.mid_price - self._take_profit_pips * pip, decimals)
+
+            logger.info(
+                "Order  %-10s  %s  units=%d  SL=%s  TP=%s",
+                instrument,
+                signal.side.value,
+                signal.units,
+                sl,
+                tp,
+            )
+
             intent = OrderIntent(
                 instrument=signal.instrument,
                 side=signal.side,
                 units=signal.units,
+                stop_loss=sl,
+                take_profit=tp,
             )
             await self._trader.execute(intent)

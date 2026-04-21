@@ -38,6 +38,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if not settings.dry_run:
         settings.validate_for_live()
+        # Build a temporary client just to verify credentials before starting
+        _check_client = OandaClient(
+            api_key=settings.oanda_api_key,
+            account_id=settings.oanda_account_id,
+            base_url=settings.oanda_base_url,
+            dry_run=False,
+        )
+        try:
+            await _check_client.verify()
+        except RuntimeError as exc:
+            logger.critical("OANDA credential check failed: %s", exc)
+            await _check_client.close()
+            raise
+        await _check_client.close()
 
     # Storage
     await init_db(settings.database_url)
@@ -92,6 +106,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         instruments=settings.instrument_list(),
         interval_seconds=settings.worker_interval_seconds,
         timezone=settings.timezone,
+        stop_loss_pips=settings.stop_loss_pips,
+        take_profit_pips=settings.take_profit_pips,
     )
     worker_task = asyncio.create_task(worker.run(), name="trading-worker")
 

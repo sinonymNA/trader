@@ -59,7 +59,12 @@ class ExecutionPolicy:
         signed_units = (
             intent.units if intent.side.value == "BUY" else -intent.units
         )
-        raw = await self._client.place_market_order(intent.instrument, signed_units)
+        raw = await self._client.place_market_order(
+            intent.instrument,
+            signed_units,
+            stop_loss=intent.stop_loss,
+            take_profit=intent.take_profit,
+        )
         fill = raw.get("orderFillTransaction", {})
 
         return OrderResult(

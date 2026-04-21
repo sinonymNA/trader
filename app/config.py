@@ -25,12 +25,14 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     timezone: str = "America/New_York"
     database_url: str = "sqlite+aiosqlite:///./trader.db"
-    worker_interval_seconds: int = 30
+    worker_interval_seconds: int = 15
 
     # Trading parameters
-    instruments: str = "EUR_USD,GBP_USD"
+    instruments: str = "EUR_USD,GBP_USD,USD_JPY"
     max_position_units: int = 1000
     daily_loss_limit_usd: float = 50.0
+    stop_loss_pips: float = 20.0
+    take_profit_pips: float = 40.0
 
     @field_validator("log_level")
     @classmethod

@@ -61,6 +61,8 @@ class OrderIntent:
     side: Side
     units: int
     comment: str = ""
+    stop_loss: float | None = None
+    take_profit: float | None = None
 
 
 @dataclass

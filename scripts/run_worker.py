@@ -70,6 +70,8 @@ async def main() -> None:
         instruments=settings.instrument_list(),
         interval_seconds=settings.worker_interval_seconds,
         timezone=settings.timezone,
+        stop_loss_pips=settings.stop_loss_pips,
+        take_profit_pips=settings.take_profit_pips,
     )
 
     logger.info(
