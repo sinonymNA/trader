@@ -32,6 +32,8 @@ class WorkerState:
         self.current_instrument: str | None = None
         self.last_signal: str | None = None
         self.last_tick_at: datetime | None = None
+        # Keyed by instrument — stores last evaluated feature snapshot for /debug
+        self.last_features: dict[str, dict] = {}
 
     @property
     def is_paused(self) -> bool:
@@ -184,9 +186,46 @@ class Worker:
 
             signal = self._signal_engine.evaluate(features)
 
+            # Determine hold reason for diagnostics
+            if signal is None:
+                if features.stale:
+                    hold_reason = "stale data"
+                elif features.short_ma is None or features.long_ma is None:
+                    hold_reason = "insufficient candle data for MA"
+                elif features.breakout_high is None or features.breakout_low is None:
+                    hold_reason = "insufficient candle data for breakout"
+                else:
+                    max_spread = 0.05 if "JPY" in instrument else 0.0005
+                    if features.spread > max_spread:
+                        hold_reason = f"spread {features.spread:.5f} > limit {max_spread}"
+                    elif features.short_ma > features.long_ma:
+                        hold_reason = f"MA bullish but price {features.mid_price:.5f} ≤ breakout_high {features.breakout_high:.5f}"
+                    elif features.short_ma < features.long_ma:
+                        hold_reason = f"MA bearish but price {features.mid_price:.5f} ≥ breakout_low {features.breakout_low:.5f}"
+                    else:
+                        hold_reason = "MAs flat / no crossover"
+            else:
+                hold_reason = None
+
+            # Store snapshot for /debug endpoint
+            self._state.last_features[instrument] = {
+                "instrument": instrument,
+                "mid_price": features.mid_price,
+                "spread": features.spread,
+                "short_ma": features.short_ma,
+                "long_ma": features.long_ma,
+                "breakout_high": features.breakout_high,
+                "breakout_low": features.breakout_low,
+                "candle_count": len(features.candles),
+                "stale": features.stale,
+                "signal": signal.side.value if signal else "HOLD",
+                "hold_reason": hold_reason,
+                "evaluated_at": utcnow().isoformat(),
+            }
+
             if signal is None:
                 self._state.last_signal = "HOLD"
-                logger.info("Signal %-10s → HOLD", instrument)
+                logger.info("Signal %-10s → HOLD (%s)", instrument, hold_reason)
                 await self._journal.record_event("SIGNAL", "HOLD", instrument=instrument)
                 continue
 

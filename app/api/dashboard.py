@@ -71,6 +71,16 @@ _HTML = """<!DOCTYPE html>
   #toast { position: fixed; top: 20px; right: 20px; padding: 10px 20px; border-radius: 6px; font-size: 13px; font-weight: 600; display: none; z-index: 100; }
   #toast.success { background: var(--green); color: #000; }
   #toast.error   { background: var(--red);   color: #fff; }
+  .signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .signal-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+  .signal-card .instr { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+  .signal-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; border-bottom: 1px solid rgba(48,54,61,0.4); }
+  .signal-row:last-child { border-bottom: none; }
+  .signal-row .label { color: var(--muted); }
+  .signal-row .val { font-family: monospace; }
+  .hold-reason { font-size: 11px; color: var(--yellow); margin-top: 6px; font-style: italic; }
+  .btn-export { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+  .btn-export:hover { color: var(--text); }
 </style>
 </head>
 <body>
@@ -141,6 +151,15 @@ _HTML = """<!DOCTYPE html>
     <button class="btn-resume" onclick="sendControl('resume')">▶ Resume</button>
     <button class="btn-toggle" onclick="sendControl('toggle-trading')">⚡ Toggle Trading</button>
     <button class="btn-flatten" onclick="confirmFlatten()">🔥 Flatten All</button>
+    <button class="btn-export" onclick="copyExport()">📋 Copy Export</button>
+  </div>
+
+  <!-- Signal Analysis -->
+  <div class="panel" style="margin-bottom:24px">
+    <div class="section-title" style="margin-bottom:12px">Signal Analysis — Why HOLD?</div>
+    <div class="signal-grid" id="signal-grid">
+      <div style="color:var(--muted);font-size:13px">Waiting for first tick…</div>
+    </div>
   </div>
 
   <!-- Trades table -->
@@ -290,7 +309,50 @@ async function refreshTrades() {
   } catch(e) { console.error('Trades refresh error', e); }
 }
 
-function refresh() { refreshState(); refreshTrades(); }
+async function refreshDebug() {
+  try {
+    const d = await (await fetch('/debug')).json();
+    const grid = document.getElementById('signal-grid');
+    const snaps = d.signal_snapshots || {};
+    const instruments = Object.keys(snaps);
+    if (instruments.length === 0) {
+      grid.innerHTML = '<div style="color:var(--muted);font-size:13px">Waiting for first tick…</div>';
+      return;
+    }
+    grid.innerHTML = instruments.map(inst => {
+      const s = snaps[inst];
+      const sigColor = s.signal === 'BUY' ? 'var(--green)' : s.signal === 'SELL' ? 'var(--red)' : 'var(--muted)';
+      const maColor = s.short_ma != null && s.long_ma != null
+        ? (s.short_ma > s.long_ma ? 'var(--green)' : s.short_ma < s.long_ma ? 'var(--red)' : 'var(--muted)')
+        : 'var(--muted)';
+      const maArrow = s.short_ma != null && s.long_ma != null
+        ? (s.short_ma > s.long_ma ? ' ↑' : s.short_ma < s.long_ma ? ' ↓' : ' =')
+        : '';
+      const p = v => v != null ? parseFloat(v).toFixed(5) : '–';
+      return '<div class="signal-card">' +
+        '<div class="instr">' + inst + ' <span style="float:right;font-size:13px;color:' + sigColor + '">' + (s.signal || '–') + '</span></div>' +
+        '<div class="signal-row"><span class="label">Mid Price</span><span class="val">' + p(s.mid_price) + '</span></div>' +
+        '<div class="signal-row"><span class="label">Spread</span><span class="val">' + (s.spread != null ? parseFloat(s.spread).toFixed(5) : '–') + '</span></div>' +
+        '<div class="signal-row"><span class="label">Short MA</span><span class="val" style="color:' + maColor + '">' + p(s.short_ma) + maArrow + '</span></div>' +
+        '<div class="signal-row"><span class="label">Long MA</span><span class="val">' + p(s.long_ma) + '</span></div>' +
+        '<div class="signal-row"><span class="label">Breakout High</span><span class="val">' + p(s.breakout_high) + '</span></div>' +
+        '<div class="signal-row"><span class="label">Breakout Low</span><span class="val">' + p(s.breakout_low) + '</span></div>' +
+        '<div class="signal-row"><span class="label">Candles</span><span class="val">' + (s.candle_count ?? '–') + (s.stale ? ' ⚠ stale' : '') + '</span></div>' +
+        (s.hold_reason ? '<div class="hold-reason">⚠ ' + s.hold_reason + '</div>' : '') +
+        '</div>';
+    }).join('');
+  } catch(e) { console.error('Debug refresh error', e); }
+}
+
+async function copyExport() {
+  try {
+    const d = await (await fetch('/export')).json();
+    await navigator.clipboard.writeText(JSON.stringify(d, null, 2));
+    toast('Copied export JSON to clipboard!');
+  } catch(e) { toast('Copy failed: ' + e.message, 'error'); }
+}
+
+function refresh() { refreshState(); refreshTrades(); refreshDebug(); }
 
 refresh();
 setInterval(refresh, 5000);

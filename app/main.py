@@ -8,7 +8,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
-from app.api import control, dashboard, health, state, trades
+from app.api import control, dashboard, debug, health, state, trades
 from app.broker.oanda_client import OandaClient
 from app.config import get_settings
 from app.core.logging import configure_logging
@@ -174,6 +174,7 @@ def create_app() -> FastAPI:
     app.include_router(trades.router)
     app.include_router(control.router)
     app.include_router(dashboard.router)
+    app.include_router(debug.router)
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
