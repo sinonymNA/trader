@@ -7,6 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Ensure /data exists even without a Railway volume (volume mount will shadow it)
+RUN mkdir -p /data
+
 # Safe defaults — override in Railway dashboard for live trading
 ENV DRY_RUN=true \
     TRADING_ENABLED=false \
