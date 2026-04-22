@@ -14,8 +14,10 @@ RUN mkdir -p /data
 ENV DRY_RUN=true \
     TRADING_ENABLED=false \
     LOG_LEVEL=INFO \
-    DATABASE_URL=sqlite+aiosqlite:////data/trader.db
+    DATABASE_URL=sqlite+aiosqlite:////data/trader.db \
+    PORT=8000
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use $PORT so Railway's dynamic port injection works
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
