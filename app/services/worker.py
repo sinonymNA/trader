@@ -34,6 +34,11 @@ class WorkerState:
         self.last_tick_at: datetime | None = None
         # Keyed by instrument — stores last evaluated feature snapshot for /debug
         self.last_features: dict[str, dict] = {}
+        # Account snapshot — refreshed each tick from OANDA
+        self.account_balance: float | None = None
+        self.account_nav: float | None = None
+        self.account_unrealized_pnl: float | None = None
+        self.account_open_trade_count: int | None = None
 
     @property
     def is_paused(self) -> bool:
@@ -148,12 +153,16 @@ class Worker:
         try:
             summary = await self._client.get_account_summary()
             acct = summary.get("account", {})
+            self._state.account_balance = float(acct.get("balance", 0) or 0)
+            self._state.account_nav = float(acct.get("NAV", 0) or 0)
+            self._state.account_unrealized_pnl = float(acct.get("unrealizedPL", 0) or 0)
+            self._state.account_open_trade_count = int(acct.get("openTradeCount", 0) or 0)
             logger.info(
-                "Account  balance=%s  NAV=%s  openTrades=%s  currency=%s",
-                acct.get("balance", "?"),
-                acct.get("NAV", "?"),
-                acct.get("openTradeCount", "?"),
-                acct.get("currency", "?"),
+                "Account  balance=%s  NAV=%s  unrealizedPL=%s  openTrades=%s",
+                self._state.account_balance,
+                self._state.account_nav,
+                self._state.account_unrealized_pnl,
+                self._state.account_open_trade_count,
             )
         except Exception as exc:
             logger.warning("Could not fetch account summary: %s", exc)

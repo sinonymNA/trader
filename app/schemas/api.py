@@ -25,6 +25,13 @@ class ApexStateResponse(BaseModel):
     rule_status: str
 
 
+class AccountResponse(BaseModel):
+    balance: float | None = None
+    nav: float | None = None
+    unrealized_pnl: float | None = None
+    open_trade_count: int | None = None
+
+
 class StateResponse(BaseModel):
     worker_status: WorkerStatus
     dry_run: bool
@@ -37,6 +44,7 @@ class StateResponse(BaseModel):
     trades_today: int = 0
     losses_today: int = 0
     apex_state: ApexStateResponse | None = None
+    account: AccountResponse | None = None
 
 
 class TradeResponse(BaseModel):

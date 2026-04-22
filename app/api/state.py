@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from app.core.clock import is_market_open
-from app.schemas.api import ApexStateResponse, StateResponse
+from app.schemas.api import AccountResponse, ApexStateResponse, StateResponse
 from app.services.worker import WorkerState
 
 router = APIRouter(tags=["state"])
@@ -28,6 +28,15 @@ async def get_state(request: Request) -> StateResponse:
             rule_status=rule_status,
         )
 
+    account: AccountResponse | None = None
+    if state.account_balance is not None:
+        account = AccountResponse(
+            balance=state.account_balance,
+            nav=state.account_nav,
+            unrealized_pnl=state.account_unrealized_pnl,
+            open_trade_count=state.account_open_trade_count,
+        )
+
     return StateResponse(
         worker_status=state.status,
         dry_run=settings.dry_run,
@@ -40,4 +49,5 @@ async def get_state(request: Request) -> StateResponse:
         trades_today=day_limits.trades_today if day_limits else 0,
         losses_today=day_limits.losses_today if day_limits else 0,
         apex_state=apex_state,
+        account=account,
     )
